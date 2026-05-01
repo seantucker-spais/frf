@@ -1,0 +1,6 @@
+parcel_id,owner,zoning,lon,lat,area_sqft
+P001,Smith,R1,-78.8784,42.8864,5400
+P002,Jones,R1,-78.8772,42.8870,5200
+P003,Acme LLC,C2,-78.8765,42.8881,12500
+P004,Wilson,R1,-78.8801,42.8855,4800
+P005,Buffalo Industrial,M1,-78.8740,42.8920,45000

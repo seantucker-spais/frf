@@ -1,0 +1,4 @@
+asset_id,name,length_ft,year_built,wkt
+B100,Main St Overpass,420,1978,POINT(-78.878 42.886)
+B101,Elm Creek,180,1995,POINT(-78.872 42.890)
+B102,Industrial Spur,650,1962,POINT(-78.870 42.895)

@@ -1,0 +1,5 @@
+inspection_id,asset_id,date,status,score
+I1,B100,2024-03-15,passed,87
+I2,B100,2025-03-10,passed,84
+I3,B101,2024-08-22,passed,91
+I4,B102,2024-11-05,deficient,58
