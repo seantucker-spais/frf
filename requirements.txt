@@ -1,0 +1,11 @@
+# Runtime
+flask>=3.0,<4.0
+pyyaml>=6.0
+shapely>=2.0
+
+# Optional — MCP server mode (frf_mcp.py --serve)
+# Uncomment to enable MCP integration:
+# mcp>=1.0
+
+# Tests
+pytest>=8.0

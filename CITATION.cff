@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+title: "FRF: File-REST-Framework — Reference Implementation of Stable Identifiers and Name Drift for OGC API – Features"
+message: "If you use this software, please cite both the software and the technical brief it implements."
+type: software
+authors:
+  - family-names: Tucker
+    given-names: Sean
+    affiliation: "University at Buffalo, MS in Applied Ontology"
+repository-code: "https://github.com/seantucker-spais/frf"
+license: Apache-2.0
+keywords:
+  - OGC API
+  - GIS
+  - REST
+  - stable identifiers
+  - name drift
+  - URI persistence
+  - geospatial
+preferred-citation:
+  type: report
+  title: "Stable Identifiers and Name Drift Signaling for OGC API – Features: A Practitioner Technical Brief"
+  authors:
+    - family-names: Tucker
+      given-names: Sean
+      affiliation: "University at Buffalo, MS in Applied Ontology"
+  year: 2026
+  month: 5
+  doi: "10.5281/zenodo.19954488"
+  url: "https://doi.org/10.5281/zenodo.19954488"
+  version: "1.0"
