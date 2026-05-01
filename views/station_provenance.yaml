@@ -1,0 +1,31 @@
+# Artifact view: exposes the provenance/representation metadata that lives
+# alongside the actual station data. This is the schema-realism move —
+# the data is honest about being an approximation, and that honesty is
+# itself a queryable view.
+#
+# Demonstrates: explicit field projection with aliases, Artifact category.
+
+name: station_provenance
+category: Artifact
+domain_type: GeospatialRepresentation
+description: >
+  Per-station metadata describing how each point was sourced and how
+  faithfully its coordinates represent the real station. Distinct from
+  the Entity view of the station itself.
+
+primary: stations
+
+fields:
+  - station_id as id
+  - station_name as represents
+  - source_system
+  - station_source_url as source_url
+  - coordinate_basis
+  - representation_seed
+  - geometry_intent
+  - latitude
+  - longitude
+
+geometry:
+  lon: longitude
+  lat: latitude

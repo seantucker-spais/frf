@@ -1,0 +1,31 @@
+# Virtual Entity view derived from unique values of stations.branch_primary.
+# No file backs this view — it's synthesized at query time from another source.
+# Demonstrates: virtual_from, aggregations.
+
+name: branches
+category: Entity
+domain_type: RailBranch
+description: >
+  LIRR branches as first-class entities, derived from the branch_primary
+  column on stations. Each branch carries member_count and the set of
+  counties it touches.
+
+virtual_from:
+  source: stations
+  column: branch_primary
+  id_field: branch_id
+  name_field: branch_name
+  aggregations:
+    - field: county_borough
+      op: distinct
+      as: counties
+    - field: state
+      op: first
+      as: state
+
+relations:
+  - name: stations
+    target: stations
+    "on": branch_name
+    target_on: branch_primary
+    kind: one_to_many

@@ -1,0 +1,43 @@
+# Override of the auto-promoted stations view. The CSV self-classifies as
+# Entity/Station, but the YAML adds:
+#   - explicit relation to the derived branches view
+#   - constraints that flag rows where station_name looks like a branch name
+#     (the data quality wobble we observed in the upload)
+#
+# Demonstrates: YAML-overrides-auto, relations to virtual views, per-view
+# constraints feeding the anomaly view.
+
+name: stations
+category: Entity
+domain_type: Station
+description: >
+  LIRR stations as Entities. Coordinates are approximations to station
+  or city centroid (see station_provenance for fidelity metadata).
+
+primary: stations
+
+geometry:
+  lon: longitude
+  lat: latitude
+
+relations:
+  - name: branch
+    target: branches
+    "on": branch_primary
+    target_on: branch_name
+    kind: many_to_one
+
+constraints:
+  - name: station_name_not_branch_name
+    expr: station_name not endswith "Branch"
+    description: >
+      A station's display name shouldn't be a branch name. Rows that violate
+      this likely have branch and station fields swapped at ingest.
+
+  - name: latitude_in_ny_range
+    expr: latitude gt 40.0
+    description: All LIRR stations are in NY; latitude < 40 is suspicious.
+
+  - name: source_url_present
+    expr: station_source_url nonempty
+    description: Every station should declare its source.
