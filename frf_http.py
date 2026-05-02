@@ -53,44 +53,67 @@ app = Flask(__name__)
 
 
 def _resolve_collection(collection_id: str):
-    """Resolve a collection by name + optional ?item= and ?uuid=, returning
-    (resolved_name, drift_info) where drift_info is None or a dict to be
-    embedded in the response body. The HTTP Warning header is set as a side
-    effect on a request-scoped flask.g attribute.
+    """Resolve a collection per brief v1.3 protocol.
+
+    Returns a tuple (resolved_name, drift_info, redirect_url):
+      - resolved_name: the canonical name to dispatch to internally, or None
+                       if the response should be a redirect.
+      - drift_info: dict for the response body's nameWarning, or None.
+      - redirect_url: an absolute URL string if the resolver indicated 308,
+                      or None.
 
     Honors:
-      - 410 Gone for tombstoned identifiers
-      - 404 for unresolvable
-      - durable-id-wins on disagreement (uuid > item > name)
+      - 200 OK with drift signal when a backup resolves
+      - 308 redirect when name-history is enabled and the path name has
+        a history entry
+      - 410 Gone when an identifier is tombstoned
+      - 404 deferred to downstream when no backups were sent and registry
+        has no entry (legacy passthrough so file-based source discovery
+        can still find pre-registry resources)
     """
     if not _HAS_REGISTRY:
-        return collection_id, None
+        return collection_id, None, None
 
-    item_param = request.args.get("item", type=int)
+    item_param = request.args.get("item", type=str)
     uuid_param = request.args.get("uuid", type=str)
-    if item_param is None and not uuid_param:
-        # Pure name lookup — let downstream handle directly.
-        return collection_id, None
 
     idreg = frf_registry.get_registry()
     res = idreg.resolve(name=collection_id, item=item_param, uid=uuid_param)
+
+    # 410 Gone — identifier was tombstoned
     if res.tombstoned:
-        abort(410, f"resource was deleted (item={item_param}, uuid={uuid_param})")
-    if res.entry is None:
+        abort(410, f"resource was deleted "
+                    f"(item={item_param}, uuid={uuid_param})")
+
+    # 308 redirect — name-history hit
+    if res.is_redirect:
+        base = request.host_url.rstrip("/")
+        redirect_url = f"{base}/collections/{res.redirect_to_name}"
+        return None, None, redirect_url
+
+    # Successful resolution via registry (name, item, or uuid)
+    if res.entry is not None:
+        drift_info = None
+        if res.has_drift:
+            drift_info = {
+                "requested_name": collection_id,
+                "served_via": res.served_via,
+                "current_canonical_name": res.entry.name,
+                "current_item": res.entry.item,
+                "current_uuid": res.entry.uuid,
+                "message": res.warning_message(),
+            }
+        return res.entry.name, drift_info, None
+
+    # No registry entry. If the client sent backups, this is a definite 404
+    # (they specified durable IDs that don't resolve anywhere). Otherwise,
+    # defer to downstream — the source may be discoverable from disk and
+    # not yet in the registry (legacy passthrough).
+    if item_param is not None or uuid_param is not None:
         abort(404, f"unknown collection: {collection_id}")
 
-    drift_info = None
-    if res.has_drift:
-        drift_info = {
-            "requested_name": collection_id,
-            "served_via": "uuid" if "name" in res.drift and uuid_param else "item",
-            "current_canonical_name": res.entry.name,
-            "current_item": res.entry.item,
-            "current_uuid": res.entry.uuid,
-            "drifted_keys": res.drift,
-            "message": res.warning_message(),
-        }
-    return res.entry.name, drift_info
+    # No backups, no registry hit, no history hit → defer to downstream
+    return collection_id, None, None
 
 
 def _attach_drift_warning(response: Response, drift_info: dict | None) -> Response:
@@ -109,6 +132,22 @@ def _attach_drift_warning(response: Response, drift_info: dict | None) -> Respon
             canonical_url = f"{base}/collections/{canonical_name}"
             response.headers["Link"] = f'<{canonical_url}>; rel="canonical"'
         response.headers["Warning"] = f'299 - "{msg}"'
+    return response
+
+
+def _build_redirect(canonical_url: str) -> Response:
+    """Build a 308 Permanent Redirect response per brief v1.3 §2.4.
+
+    Standard HTTP clients follow this automatically; method is preserved
+    (308 over 301) so POST/PUT/DELETE redirect cleanly.
+    """
+    response = Response(
+        f"resource has moved; canonical URL: {canonical_url}",
+        status=308,
+        mimetype="text/plain",
+    )
+    response.headers["Location"] = canonical_url
+    response.headers["Link"] = f'<{canonical_url}>; rel="canonical"'
     return response
 
 
@@ -513,7 +552,9 @@ def _view_descriptor(view) -> dict:
 
 @app.route("/collections/<collection_id>")
 def collection(collection_id: str):
-    resolved_name, drift = _resolve_collection(collection_id)
+    resolved_name, drift, redirect_url = _resolve_collection(collection_id)
+    if redirect_url:
+        return _build_redirect(redirect_url)
     cols = _all_collections()
     cid = resolved_name.lower()
     if cid not in cols:
@@ -524,14 +565,6 @@ def collection(collection_id: str):
     else:
         body = _collection_descriptor(obj)
     if drift:
-        # Override the body's id/item/uuid with the resolved entry's values.
-        # This way, when a stale name + valid item resolves through drift,
-        # the response identifies the resource by its current canonical
-        # identity, not by whatever stale view/source the disk discovery
-        # happened to find.
-        body["id"] = drift["current_canonical_name"]
-        body["item"] = drift["current_item"]
-        body["uuid"] = drift["current_uuid"]
         body["RestReference:nameWarning"] = drift
     response = jsonify(body)
     return _attach_drift_warning(response, drift)
@@ -539,7 +572,21 @@ def collection(collection_id: str):
 
 @app.route("/collections/<collection_id>/items")
 def items(collection_id: str):
-    resolved_name, drift = _resolve_collection(collection_id)
+    resolved_name, drift, redirect_url = _resolve_collection(collection_id)
+    if redirect_url:
+        # Preserve the original query string on the redirect target so
+        # any ?bbox, ?limit, ?f, etc. flows to the canonical URL.
+        if request.query_string:
+            sep = "&" if "?" in redirect_url else "?"
+            redirect_url = (redirect_url + sep +
+                             request.query_string.decode("ascii"))
+        # The /items suffix needs to be on the redirect target
+        if redirect_url.endswith("/items") is False:
+            # Replace /collections/{name} with /collections/{name}/items
+            base, _, _ = redirect_url.partition("?")
+            qs = redirect_url[len(base):]
+            redirect_url = base + "/items" + qs
+        return _build_redirect(redirect_url)
     cols = _all_collections()
     cid = resolved_name.lower()
     if cid not in cols:
@@ -606,7 +653,18 @@ def items(collection_id: str):
 
 @app.route("/collections/<collection_id>/items/<feature_id>")
 def item(collection_id: str, feature_id: str):
-    resolved_name, drift = _resolve_collection(collection_id)
+    resolved_name, drift, redirect_url = _resolve_collection(collection_id)
+    if redirect_url:
+        # Append /items/{feature_id} to the redirect target, preserving the
+        # query string.
+        base, _, _ = redirect_url.partition("?")
+        qs = redirect_url[len(base):]
+        redirect_url = f"{base}/items/{feature_id}{qs}"
+        if request.query_string:
+            sep = "&" if "?" in redirect_url else "?"
+            redirect_url = (redirect_url + sep +
+                             request.query_string.decode("ascii"))
+        return _build_redirect(redirect_url)
     registry = engine.discover_sources()
     src = registry.get(resolved_name.lower())
     if not src:
