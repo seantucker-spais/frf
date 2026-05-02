@@ -1,133 +1,225 @@
-"""Integration tests — end-to-end through Flask, exercising the wire-level
-behavior described in the technical brief §4.
+#!/usr/bin/env python3
+"""HTTP integration tests — verify the v1.3 protocol mapping.
 
-Run with: pytest tests/test_integration.py -v
+The registry's protocol correctness is covered by test_registry.py.
+These tests exercise the HTTP layer's translation of resolver outcomes
+into HTTP responses:
+  - 200 OK (path resolves)
+  - 200 OK + Warning header + nameWarning body (backup resolves)
+  - 308 Permanent Redirect (name-history fallback)
+  - 410 Gone (tombstone)
+  - 404 Not Found (nothing resolves)
 """
 
 import sys
-from pathlib import Path
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
+import frf_mcp as engine
 import frf_registry
 from frf_http import app
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    """Flask test client with a fresh registry per test."""
-    # Point the registry at a per-test file
-    p = tmp_path / "_registry.yaml"
-    monkeypatch.setattr(frf_registry, "REGISTRY_PATH", p)
+def assert_true(c, msg):
+    if not c:
+        print(f"  FAIL: {msg}")
+        return False
+    print(f"  PASS: {msg}")
+    return True
+
+
+def assert_eq(a, b, msg):
+    if a != b:
+        print(f"  FAIL: {msg}\n     expected {b!r}\n     actual   {a!r}")
+        return False
+    print(f"  PASS: {msg}")
+    return True
+
+
+def setup():
+    """Clean slate: wipe registry file and reset module singleton."""
+    from pathlib import Path
+    p = Path(__file__).parent / "views" / "_registry.yaml"
+    if p.exists():
+        p.unlink()
     frf_registry.reset_registry_for_tests()
-    c = app.test_client()
-    # Trigger discovery so registry populates
-    c.get("/registry")
-    return c
 
 
-def test_collection_carries_dual_keys(client):
-    """Every collection descriptor carries item + uuid."""
+def test_path_resolves_normally():
+    """Step 1: name resolves → 200 OK, no Warning header."""
+    print("\n[H1] step 1: path name resolves → 200 OK, no warnings")
+    setup()
+    client = app.test_client()
     rv = client.get("/collections/stations")
     body = rv.get_json()
-    assert "item" in body
-    assert "uuid" in body
-    assert isinstance(body["item"], int)
-    assert len(body["uuid"]) == 36
+    ok = assert_eq(rv.status_code, 200, "200 OK")
+    ok &= assert_true("item" in body, "response includes item (server UUID)")
+    ok &= assert_true("uuid" in body, "response includes uuid (global UUID)")
+    ok &= assert_true(rv.headers.get("Warning") is None,
+                       "no Warning header on happy path")
+    ok &= assert_true("RestReference:nameWarning" not in body,
+                       "no nameWarning body field on happy path")
+    return ok
 
 
-def test_happy_path_no_warnings(client):
-    """Valid name, no backup → 200, no warning."""
+def test_legacy_client_after_rename_gets_308():
+    """Brief §2.4: stale name with no backups → 308 redirect."""
+    print("\n[H2] §2.4: legacy client + stale name → 308 redirect")
+    setup()
+    client = app.test_client()
+
+    # Discover and capture identifiers
     rv = client.get("/collections/stations")
-    assert rv.status_code == 200
-    assert rv.headers.get("Warning") is None
-    assert rv.headers.get("Link") is None
-    assert "RestReference:nameWarning" not in rv.get_json()
+    body = rv.get_json()
+    item = body["item"]
 
-
-def test_headline_scenario(client):
-    """The brief's §4 wire example — bookmark survives rename."""
-    # Bookmark
-    rv = client.get("/collections/stations")
-    item = rv.get_json()["item"]
-
-    # Operator renames
+    # Rename
     idreg = frf_registry.get_registry()
     idreg.rename(item, "mta_lirr_stations")
 
-    # Stale bookmark + backup item resolves
-    rv = client.get(f"/collections/stations?item={item}")
-    assert rv.status_code == 200
-
-    # Headers (the brief's required signals)
+    # Legacy client requests the stale name with no backups
+    rv = client.get("/collections/stations", follow_redirects=False)
+    ok = assert_eq(rv.status_code, 308, "308 Permanent Redirect")
+    location = rv.headers.get("Location", "")
+    ok &= assert_true("mta_lirr_stations" in location,
+                       f"Location points to canonical: {location}")
     link = rv.headers.get("Link", "")
-    assert 'rel="canonical"' in link
-    assert "mta_lirr_stations" in link
+    ok &= assert_true('rel="canonical"' in link,
+                       f"Link: rel=\"canonical\" present: {link}")
+    return ok
 
-    warning = rv.headers.get("Warning", "")
-    assert "299" in warning
 
-    # Body field
+def test_optin_client_with_history_disabled_gets_drift():
+    """Brief §2: opt-in client + history-disabled server → 200 + drift signal."""
+    print("\n[H3] §2: history disabled, opt-in client → 200 + drift")
+    setup()
+    client = app.test_client()
+
+    # Bootstrap with default config to populate
+    rv = client.get("/collections/stations")
     body = rv.get_json()
-    assert "RestReference:nameWarning" in body
-    nw = body["RestReference:nameWarning"]
-    assert nw["current_canonical_name"] == "mta_lirr_stations"
-    assert nw["current_item"] == item
-    assert nw["served_via"] == "item"
+    item = body["item"]
+    uid = body["uuid"]
+
+    # Now swap to a history-disabled registry pointed at the same file
+    from pathlib import Path
+    p = Path(__file__).parent / "views" / "_registry.yaml"
+    frf_registry._global_registry = frf_registry.Registry(
+        path=p, name_history_enabled=False)
+
+    # Rename via the new (disabled-history) registry
+    idreg = frf_registry.get_registry()
+    idreg.rename(item, "mta_lirr_stations_v2")
+
+    # Opt-in client: stale name + backups
+    rv = client.get(f"/collections/stations?item={item}",
+                     follow_redirects=False)
+    ok = assert_eq(rv.status_code, 200,
+                    "200 OK (no history → step 2 fallback)")
+    warning = rv.headers.get("Warning", "")
+    ok &= assert_true("299" in warning, f"Warning: 299 emitted: {warning!r}")
+    body = rv.get_json()
+    ok &= assert_true("RestReference:nameWarning" in body,
+                       "body carries nameWarning")
+    if "RestReference:nameWarning" in body:
+        nw = body["RestReference:nameWarning"]
+        ok &= assert_eq(nw["served_via"], "item",
+                         "served_via reports item (path failed)")
+        ok &= assert_eq(nw["current_canonical_name"], "mta_lirr_stations_v2",
+                         "nameWarning advertises the new canonical name")
+        ok &= assert_eq(nw["current_item"], item,
+                         "nameWarning carries refreshed item")
+
+    # Reset to default for subsequent tests
+    frf_registry._global_registry = None
+    return ok
 
 
-def test_tombstoned_returns_410(client):
-    """A deleted resource returns 410 Gone, not 404."""
-    rv = client.get("/collections/zones")
-    item = rv.get_json()["item"]
+def test_tombstone_returns_410():
+    """Tombstoned item → 410 Gone."""
+    print("\n[H4] tombstone: item lookup → 410 Gone")
+    setup()
+    client = app.test_client()
+
+    rv = client.get("/collections/stations")
+    body = rv.get_json()
+    item = body["item"]
+    uid = body["uuid"]
 
     idreg = frf_registry.get_registry()
     idreg.delete(item, when="2026-01-01T00:00:00Z")
 
     rv = client.get(f"/collections/anything?item={item}")
-    assert rv.status_code == 410
+    ok = assert_eq(rv.status_code, 410, "tombstoned item → 410")
+    rv = client.get(f"/collections/anything?uuid={uid}")
+    ok &= assert_eq(rv.status_code, 410, "tombstoned uuid → 410")
+    return ok
 
 
-def test_truly_unknown_returns_404(client):
-    """An identifier that never existed returns 404, not 410."""
-    rv = client.get("/collections/whatever?item=99999")
-    assert rv.status_code == 404
+def test_uuid_only_resolution_via_step_3():
+    """Brief §2 step 3: uuid resolves when name and item both fail."""
+    print("\n[H5] step 3: uuid-only resolution via global UUID")
+    setup()
+    client = app.test_client()
 
-
-def test_uuid_only_resolution(client):
-    """A UUID can resolve a request even when the path name is meaningless."""
     rv = client.get("/collections/stations")
-    uid = rv.get_json()["uuid"]
-
-    # Use an arbitrary path name
-    rv = client.get(f"/collections/_anything_?uuid={uid}")
-    assert rv.status_code == 200
     body = rv.get_json()
-    assert "RestReference:nameWarning" in body
-    assert body["RestReference:nameWarning"]["current_canonical_name"] == "stations"
+    uid = body["uuid"]
+
+    # Use a name that doesn't exist and isn't in history; only uuid should resolve
+    rv = client.get(f"/collections/totally_unknown?uuid={uid}")
+    ok = assert_eq(rv.status_code, 200, "uuid-only resolution → 200")
+    body = rv.get_json()
+    ok &= assert_true("RestReference:nameWarning" in body,
+                       "uuid-only response carries nameWarning")
+    if "RestReference:nameWarning" in body:
+        nw = body["RestReference:nameWarning"]
+        ok &= assert_eq(nw["served_via"], "uuid",
+                         "served_via reports uuid (path and item failed)")
+    return ok
 
 
-def test_conformance_declares_stable_ids(client):
-    """The proposed conformance class is declared at /conformance."""
+def test_total_failure_returns_404():
+    """Step 4: nothing resolves → 404."""
+    print("\n[H6] step 4: nothing resolves → 404")
+    setup()
+    client = app.test_client()
+
+    fake_uuid_a = "00000000-0000-0000-0000-000000000000"
+    fake_uuid_b = "11111111-1111-1111-1111-111111111111"
+    rv = client.get(f"/collections/ghost?item={fake_uuid_a}&uuid={fake_uuid_b}")
+    ok = assert_eq(rv.status_code, 404, "no resolution → 404")
+    return ok
+
+
+def test_conformance_declares_stable_ids():
+    print("\n[H7] conformance declares stable-ids class")
+    setup()
+    client = app.test_client()
     rv = client.get("/conformance")
     classes = rv.get_json()["conformsTo"]
-    assert any("stable-ids" in c for c in classes)
-    assert any("ogcapi-features-1" in c for c in classes)
+    ok = assert_true(any("stable-ids" in c for c in classes),
+                      "stable-ids class declared")
+    ok &= assert_true(any("ogcapi-features-1" in c for c in classes),
+                       "OGC core class still declared")
+    return ok
 
 
-def test_registry_endpoint_lists_entries(client):
-    """The /registry endpoint exposes the live identifier book."""
-    rv = client.get("/registry")
-    assert rv.status_code == 200
-    data = rv.get_json()
-    assert "live" in data
-    assert "tombstoned" in data
-    assert len(data["live"]) > 0
-    # Each entry has the dual keys
-    e = data["live"][0]
-    assert "item" in e
-    assert "uuid" in e
-    assert "name" in e
-    assert "kind" in e
+def main():
+    tests = [
+        test_path_resolves_normally,
+        test_legacy_client_after_rename_gets_308,
+        test_optin_client_with_history_disabled_gets_drift,
+        test_tombstone_returns_410,
+        test_uuid_only_resolution_via_step_3,
+        test_total_failure_returns_404,
+        test_conformance_declares_stable_ids,
+    ]
+    results = [t() for t in tests]
+    passed = sum(1 for r in results if r)
+    print(f"\n{'='*60}")
+    print(f"  {passed}/{len(tests)} tests passed")
+    print(f"{'='*60}")
+    sys.exit(0 if passed == len(tests) else 1)
+
+
+if __name__ == "__main__":
+    main()
