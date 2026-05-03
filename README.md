@@ -414,12 +414,12 @@ If you cite the brief, please also cite this implementation.
 ## Status
 
 - **REST-generic brief v1.3** — published on Zenodo (DOI above), Apache 2.0
-- **OGC-specific brief v1.0** — published on Zenodo; v1.3 revision in progress
+- **OGC-specific brief v2.0** — published on Zenodo (DOI above), Apache 2.0
 - **stable-ids reference implementation** — v1.3, complete and tested
   (25/25 tests passing across registry and integration suites)
-- **OGC SWG discussion issue** — filed and updated against
+- **OGC SWG discussion issue** — filed and updated agains
   [opengeospatial/ogcapi-features](https://github.com/opengeospatial/ogcapi-features),
-  v1.3 status posted
+  v2.0 updated
 - **EES-A-R ontology layer** — present but separate from the stable-ids contribution
 
 ## License
