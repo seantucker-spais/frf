@@ -25,9 +25,9 @@ This repository is the reference implementation for two companion briefs:
 > A Practitioner Technical Brief, v1.3.*
 > Zenodo DOI: `10.5281/zenodo.19980026`
 >
-> **OGC-specific companion (v1.0; v1.3 forthcoming):**
+> **OGC-specific companion (v2.0):**
 > Tucker, S. (2026). *Stable Identifiers and Name Drift Signaling for OGC API – Features.*
-> Zenodo DOI: `10.5281/zenodo.19954488`
+> Zenodo DOI: `10.5281/zenodo.19990026`
 
 The proposal is a small additive pattern: every named resource carries a
 **triplet** of identifiers — a mutable `name` in the URI path, a server-instance
@@ -396,9 +396,10 @@ If you cite the brief, please also cite this implementation.
   title     = {Stable Identifiers and Name Drift Signaling for OGC API – Features:
                A Practitioner Technical Brief},
   year      = {2026},
+  version   = {v2.0},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.19954488},
-  url       = {https://doi.org/10.5281/zenodo.19954488}
+  doi       = {10.5281/zenodo.19990026},
+  url       = {https://doi.org/10.5281/zenodo.19990026}
 }
 
 @software{tucker2026frf,
